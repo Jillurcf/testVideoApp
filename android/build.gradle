@@ -1,7 +1,7 @@
 buildscript {
     ext {
         buildToolsVersion = "34.0.0"
-        minSdkVersion = 23
+        minSdkVersion = 24
         compileSdkVersion = 34
         targetSdkVersion = 34
         ndkVersion = "26.1.10909125"
@@ -10,6 +10,8 @@ buildscript {
     repositories {
         google()
         mavenCentral()
+        maven { url 'https://artifactory.agora.io/artifactory/libs-release' } // Agora specific repository
+        maven { url '../../node_modules/@notifee/react-native/android/libs' } // Notifee specific repository
     }
     dependencies {
         classpath("com.android.tools.build:gradle")

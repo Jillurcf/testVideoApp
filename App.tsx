@@ -1,117 +1,215 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
-
-import React from 'react';
-import type {PropsWithChildren} from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
+  Platform,
+  TouchableOpacity,
   Text,
-  useColorScheme,
   View,
+  StyleSheet,
 } from 'react-native';
-
 import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
+  createAgoraRtcEngine,
+  ChannelProfileType,
+  ClientRoleType,
+  IRtcEngine,
+  RtcSurfaceView,
+  RtcConnection,
+  IRtcEngineEventHandler,
+} from 'react-native-agora';
+import io from 'socket.io-client'; // Import socket.io-client
 
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
+import getPermission from './src/components/Permission';
 
-function Section({children, title}: SectionProps): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
-  return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
+const token = '007eJxTYJhhXc6nyHqQcb3tu3t7j87pWCMsoNFmWXZ0a3Xw/PPTfvxUYEg1MTc2Tk6ySDYwSTRJtkyyME+xsEyxNElNNk5NNkk001W+kdYQyMjQVXaFkZEBAkF8YYaS1OKSsMyU1HznxJyczLx0x4ICBgYAes8mKA==';
+const appId = 'e4733cb8c04a4c9b87d89d94ec3ec4a6';
+const channelName = 'testVideoCallingApp';
+const uid = 0;
+const socket = io('http://your-server-ip:5000'); // Initialize socket connection
+
+const App = () => {
+  const [engine, setEngine] = useState<IRtcEngine | null>(null);
+  const [isHost, setIsHost] = useState(true);
+  const [callStarted, setCallStarted] = useState(false);
+  const [peerIds, setPeerIds] = useState<number[]>([]);
+  const [initializationComplete, setInitializationComplete] = useState(false);
+  const agoraEngineRef = useRef<IRtcEngine | null>(null);
+  const eventHandler = useRef<IRtcEngineEventHandler>();
+  const [callingUserId, setCallingUserId] = useState('');
+  const currentUserId = 'user1';  // Static userId for this instance
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      getPermission();
+    }
+
+    const initialize = async () => {
+      try {
+        // Initialize Agora engine
+        agoraEngineRef.current = createAgoraRtcEngine();
+        const agoraEngine = agoraEngineRef.current;
+        agoraEngine.initialize({ appId });
+
+        // Register event handlers
+        eventHandler.current = {
+          onJoinChannelSuccess: () => {
+            console.log('Successfully joined channel:', channelName);
+            setCallStarted(true);
           },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
+          onUserJoined: (_connection: RtcConnection, uid: number) => {
+            console.log('Remote user', uid, 'has joined');
+            setPeerIds((prevPeerIds) => [...prevPeerIds, uid]);
           },
-        ]}>
-        {children}
-      </Text>
-    </View>
-  );
-}
+          onUserOffline: (_connection: RtcConnection, uid: number) => {
+            console.log('Remote user', uid, 'has left the channel');
+            setPeerIds((prevPeerIds) => prevPeerIds.filter((id) => id !== uid));
+          },
+        };
 
-function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+        agoraEngine.registerEventHandler(eventHandler.current);
+        setInitializationComplete(true);
+      } catch (error) {
+        console.error('Initialization error:', error);
+      }
+    };
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+    initialize();
+
+    // Register the user with the server
+    socket.emit('register', currentUserId);
+
+    // Listen for incoming calls
+    socket.on('receive-call', ({ from }) => {
+      console.log('Incoming call from', from);
+      setCallingUserId(from);
+      // Here, show an alert or modal to the user to accept/reject the call
+    });
+
+    // Listen for call acceptance
+    socket.on('call-accepted', () => {
+      startCall();  // Start the Agora call
+    });
+
+    return () => {
+      socket.disconnect();  // Clean up when the component unmounts
+      if (agoraEngineRef.current) {
+        agoraEngineRef.current.leaveChannel();
+        agoraEngineRef.current.unregisterEventHandler(eventHandler.current);
+        agoraEngineRef.current.release();
+        setPeerIds([]);
+        setCallStarted(false);
+        setInitializationComplete(false);
+      }
+    };
+  }, []);
+
+  const startCall = () => {
+    if (agoraEngineRef.current && initializationComplete) {
+      const agoraEngine = agoraEngineRef.current;
+
+      if (isHost) {
+        agoraEngine.enableVideo();
+        agoraEngine.startPreview();
+        agoraEngine.joinChannel(token, channelName, uid, {
+          channelProfile: ChannelProfileType.ChannelProfileLiveBroadcasting,
+          clientRoleType: ClientRoleType.ClientRoleBroadcaster,
+          publishMicrophoneTrack: true,
+          publishCameraTrack: true,
+          autoSubscribeAudio: true,
+          autoSubscribeVideo: true,
+        });
+      } else {
+        agoraEngine.joinChannel(token, channelName, uid, {
+          channelProfile: ChannelProfileType.ChannelProfileLiveBroadcasting,
+          clientRoleType: ClientRoleType.ClientRoleAudience,
+          publishMicrophoneTrack: false,
+          publishCameraTrack: false,
+          autoSubscribeAudio: true,
+          autoSubscribeVideo: true,
+        });
+      }
+    }
+  };
+
+  const endCall = () => {
+    if (agoraEngineRef.current && callStarted) {
+      agoraEngineRef.current.leaveChannel();
+      setCallStarted(false);
+      setPeerIds([]);
+    }
+  };
+
+  const callUser = (userIdToCall) => {
+    socket.emit('call-user', { userToCall: userIdToCall, from: currentUserId });
+  };
+
+  const answerCall = () => {
+    socket.emit('answer-call', { to: callingUserId, from: currentUserId });
+    startCall();
   };
 
   return (
-    <SafeAreaView style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        style={backgroundStyle}>
-        <Header />
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
+    <View style={styles.container}>
+      {callStarted && (
+        <View style={styles.videoContainer}>
+          <RtcSurfaceView
+            style={styles.localVideo}
+            canvas={{ uid: 0 }}
+            zOrderMediaOverlay={true}
+          />
+          {peerIds.map((peerId) => (
+            <RtcSurfaceView
+              key={peerId}
+              style={styles.remoteVideo}
+              canvas={{ uid: peerId }}
+            />
+          ))}
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      )}
+      <TouchableOpacity onPress={() => callUser('user2')} style={styles.button}>
+        <Text style={styles.buttonText}>Call User 2</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={answerCall} style={styles.button}>
+        <Text style={styles.buttonText}>Answer Call</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={endCall} style={styles.button}>
+        <Text style={styles.buttonText}>End Call</Text>
+      </TouchableOpacity>
+    </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
+  videoContainer: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
+  localVideo: {
+    width: 150,
+    height: 150,
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 1,
   },
-  highlight: {
-    fontWeight: '700',
+  remoteVideo: {
+    width: '100%',
+    height: '100%',
+  },
+  button: {
+    backgroundColor: '#007bff',
+    padding: 10,
+    borderRadius: 5,
+    margin: 10,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
   },
 });
 
